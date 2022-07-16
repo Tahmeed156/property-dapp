@@ -13,19 +13,12 @@ import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
 import Grid from '@mui/material/Grid';
 import Container from '@mui/material/Container';
+import Web3 from "web3";
+import { useState } from 'react';
+import registryAbi from "./abis/Registry.json";
+import propertyAbi from "./abis/Property.json";
+import env from "react-dotenv";
 
-
-function createData(name, calories, fat, carbs, protein) {
-  return { name, calories, fat, carbs, protein };
-}
-
-const rows = [
-  createData('Frozen yoghurt', 159, 6.0, 24, 4.0),
-  createData('Ice cream sandwich', 237, 9.0, 37, 4.3),
-  createData('Eclair', 262, 16.0, 24, 6.0),
-  createData('Cupcake', 305, 3.7, 67, 4.3),
-  createData('Gingerbread', 356, 16.0, 49, 3.9),
-];
 
 const Item = styled(Paper)(({ theme }) => ({
   backgroundColor: theme.palette.mode === 'dark' ? '#1A2027' : '#fff',
@@ -35,7 +28,80 @@ const Item = styled(Paper)(({ theme }) => ({
   color: theme.palette.text.secondary,
 }));
 
+let ppt, registry;
+
 function App() {
+
+  const [account, setAccount] = useState("");
+  const [balance, setBalance] = useState("");
+  const [properties, setProperties] = useState(null);
+  const [purchases, setPurchases] = useState(null);
+
+  const loadWeb3 = async () => {
+    if (typeof window.ethereum !== "undefined") {
+      // Connect to metamask
+      const web3 = new Web3(window.ethereum);
+      try {
+        await window.ethereum.enable();
+      }
+      catch (error) {
+        console.log(error);
+      }
+
+      const accounts = await web3.eth.getAccounts();
+      
+      if (typeof accounts[0] !== "undefined") {
+        const balance = await web3.eth.getBalance(accounts[0]);
+        setAccount(accounts[0]);
+        setBalance(balance);
+      } 
+      else {
+        console.log("Please login with metamask")
+      }
+
+      try {
+        // Access smart contracts
+        ppt = new web3.eth.Contract(propertyAbi, env.PROPERTY_CONTRACT_ADDRESS);
+        registry = new web3.eth.Contract(registryAbi, env.REGISTRY_CONTRACT_ADDRESS);
+
+        getInitialData();
+      }
+      catch (e) {
+        console.log("Error loading smart contract: " + e);
+      }
+    }
+    else {
+      window.alert("Please install metamask")
+    }
+  };
+
+  const getInitialData = async () => {
+    // Get list of properties & purchases
+    let props = await registry.methods.getProperties().call();
+    setPurchases(await registry.methods.getPurchases().call());
+
+    // Collect all ownership information from NFT contract
+    setProperties(await Promise.all(props.map(async (item, index) => ({
+      ...item,
+      id: index,
+      owner: await ppt.methods.ownerOf(index).call()
+    }))));
+  }
+
+  const buyProperty = async (pid, price) => {
+    await registry.methods.buyProperty(pid)
+      .send({ from: account, value: price, gas: 1e6 })
+      .then(console.log);
+  };
+
+  const setPropertyAvailability = async (pid, avl) => {
+    await registry.methods.setPropertyAvailability(pid, avl)
+      .send({ from: account, gas: 1e6 })
+      .then(console.log);
+  };
+
+  loadWeb3();
+
   return (
     <div className="App">
       <Box sx={{ flexGrow: 1 }}>
@@ -46,28 +112,65 @@ function App() {
               Property DAPP
             </Typography>
 
-            <Button color="inherit">Login</Button>
+            <p>
+              account: { account.substring(0, 20) }... <br/>
+              balance: { balance / 1e18 } ETH
+            </p>
+            {/* <Button color="inherit">Login</Button> */}
           </Toolbar>
         </AppBar>
 
       <Container maxWidth="md">
 
-        {/* Properties */}
         <Typography variant="h4" gutterBottom component="div">
-          Properties
+          Available Properties
         </Typography>
         <Grid container spacing={{ xs: 2, md: 3 }} columns={{ xs: 4, sm: 8, md: 12 }}
           style={{ marginBottom: "20px" }}>
-          {Array.from(Array(8)).map((_, index) => (
+          {properties && properties.map((item, index) => item.owner !== account && (
             <Grid item xs={2} sm={4} md={4} key={index}>
               <Item>
-                Property {index + 1}
+                <Typography variant="h6" gutterBottom component="div">
+                  Property #{item.id}
+                </Typography>
+                Price: {item.price} <br/>
+                Location: {item.location} <br/>
+                Size: {item.size} <br/>
+                {item.available && 
+                <Button variant="outlined" size="small" onClick={() => buyProperty(item.id, item.price)}>
+                  Buy
+                </Button>}
               </Item>
             </Grid>
           ))}
         </Grid>
 
-        {/* Purchases */}
+        <Typography variant="h4" gutterBottom component="div">
+          Owned Properties
+        </Typography>
+        <Grid container spacing={{ xs: 2, md: 3 }} columns={{ xs: 4, sm: 8, md: 12 }}
+          style={{ marginBottom: "20px" }}>
+          {properties && properties.map((item, index) => item.owner === account && 
+            (<Grid item xs={2} sm={4} md={4} key={index}>
+              <Item>
+                <Typography variant="h6" gutterBottom component="div">
+                  Property #{item.id}
+                </Typography>
+                Price: {item.price} <br/>
+                Location: {item.location} <br/>
+                Size: {item.size} <br/>
+                {item.available ? 
+                <Button variant="outlined" size="small" onClick={() => setPropertyAvailability(item.id, false)}>
+                  Available
+                </Button>: 
+                <Button variant="outlined" color="error" size="small" onClick={() => setPropertyAvailability(item.id, true)}>
+                  Unavailable
+              </Button>}
+              </Item>
+            </Grid>
+          ))}
+        </Grid>
+
         <Typography variant="h4" gutterBottom component="div">
           Purchases
         </Typography>
@@ -75,26 +178,24 @@ function App() {
           <Table sx={{ minWidth: 650 }} size="small" aria-label="a dense table">
             <TableHead>
               <TableRow>
-                <TableCell>Dessert (100g serving)</TableCell>
-                <TableCell align="right">Calories</TableCell>
-                <TableCell align="right">Fat&nbsp;(g)</TableCell>
-                <TableCell align="right">Carbs&nbsp;(g)</TableCell>
-                <TableCell align="right">Protein&nbsp;(g)</TableCell>
+                <TableCell>Property Id</TableCell>
+                <TableCell align="right">Buyer</TableCell>
+                <TableCell align="right">Owner</TableCell>
+                <TableCell align="right">Price</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.map((row) => (
+              {purchases && purchases.map((item) => (
                 <TableRow
-                  key={row.name}
+                  key={item.pid}
                   sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                 >
                   <TableCell component="th" scope="row">
-                    {row.name}
+                    {item.pid}
                   </TableCell>
-                  <TableCell align="right">{row.calories}</TableCell>
-                  <TableCell align="right">{row.fat}</TableCell>
-                  <TableCell align="right">{row.carbs}</TableCell>
-                  <TableCell align="right">{row.protein}</TableCell>
+                  <TableCell align="right">{item.buyer.substring(0, 15)}...</TableCell>
+                  <TableCell align="right">{item.owner.substring(0, 15)}...</TableCell>
+                  <TableCell align="right">{item.price}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
